@@ -6,6 +6,8 @@ import numpy as np
 import torch
 from torch import nn 
 from torch import optim
+from torch.utils.data import TensorDataset, DataLoader
+
 
 # log config for training
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -19,87 +21,79 @@ class FNN(nn.Module):
 
         # parameters and hyperparameters
         self.numFeatures = input # param
-        self.dense_nodes = 5  # hard code a value now, dynamically change later
+        self.dense_nodes = 64  # hard code a value now, dynamically change later
         self.output_nodes = output 
-
-        # loss function + optimzing function
-        self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.Adam(self.parameters())
 
         # define our model
         self.fnn = nn.Sequential(
             # input layer
             nn.Linear(self.numFeatures, self.dense_nodes),
             nn.ReLU(),
-            nn.Dropout(),   # include dropout to randomly zero some features
+            nn.Dropout(p = 0.2),   # include dropout to randomly zero some features
 
             # first hidden layer
-            nn.Linear(self.dense_nodes, self.dense_nodes),
+            nn.Linear(self.dense_nodes, self.dense_nodes * 2),
             nn.ReLU(),
-            nn.Dropout(),
+            nn.Dropout(p = 0.2),
 
             # second hidden layer
-            nn.Linear(self.dense_nodes, self.dense_nodes),
+            nn.Linear(self.dense_nodes * 2, self.dense_nodes * 2),
             nn.ReLU(),
-            nn.Dropout(),
+            nn.Dropout(p = 0.2),
 
             # third hidden layer
-            nn.Linear(self.dense_nodes, self.dense_nodes),
+            nn.Linear(self.dense_nodes * 2, self.dense_nodes),
             nn.ReLU(),
-            nn.Dropout(),
+            nn.Dropout(p = 0.2),
 
             # output layer
             nn.Linear(self.dense_nodes, self.output_nodes),
-            nn.LogSoftmax(dim = 1)
         )
+
+    # loss function + optimzing function
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
 
     # forward
     def forward(self, x):
         return self.fnn(x)
 
     # train model
-    def _train(self, X, y, num_epochs = 200):
-        # forward pass
-        self.forward(X)
+    def _train(self, X, y, num_epochs=200, batch_size=64):
+        self.fnn.train()
 
-        # we'll also calculate the probabilities for each class
-        # also used for auc plots
-        pred_probs = []
-        # training loop
-        for epoch in range(0, num_epochs):
-            # forward prop
-            y_pred = self.fnn(X)
-            loss = self.criterion(y_pred, y)
+        dataset = TensorDataset(X, y)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-            # now, we'll log each epoch information
-            logging.info(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}')
-            print()
+        for epoch in range(num_epochs):
+            total_loss = 0.0
 
-            # backprop
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+            for batch_X, batch_y in loader:
+                y_pred = self.forward(batch_X)
+                loss = self.criterion(y_pred, batch_y)
 
-            probs = torch.exp(y_pred).detach().cpu().numpy()
-            pred_probs.append(probs)
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
 
-        # we'll return pred_probs to calc auc, y_pred vector
-        return y_pred, pred_probs
+                total_loss += loss.item()
+
+            avg_loss = total_loss / len(loader)
+            print(f"Epoch [{epoch+1}/{num_epochs}], Avg Loss: {avg_loss:.4f}")
 
     # evaluate model performance
     def _evaluate(self, X, y):
-        self.fnn.eval() # set model to eval
+        self.fnn.eval()
 
-        # disable optimization
         with torch.no_grad():
-            y_pred = self.forward(X)
-            y = y.view(-1)
+            logits = self.forward(X)               # raw outputs
+            loss = self.criterion(logits, y.view(-1))
+            pred_probs = torch.softmax(logits, dim=1)  # get class probabilities
+            y_pred = torch.argmax(pred_probs, dim=1)   # get predicted classes
 
-            # compute loss
-            loss = self.criterion(y_pred, y)
+            correct = (y_pred == y).sum().item()
+            accuracy = correct / y.size(0)
 
-            # log loss
-            logging.info(f'Loss: {loss}')
+            print(f'Loss: {loss:.4f}, Accuracy: {accuracy:.4f}')
 
-            # return loss for any reason we might need it
-            return loss
+            return loss.item(), accuracy, y.cpu().numpy(), y_pred.cpu().numpy(), pred_probs.cpu().numpy()
